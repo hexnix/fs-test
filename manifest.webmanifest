@@ -1,0 +1,15 @@
+{
+  "name": "Folder Test",
+  "short_name": "Folder Test",
+  "description": "Checks whether a web app can keep using a folder on this phone.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0E0E10",
+  "theme_color": "#0E0E10",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

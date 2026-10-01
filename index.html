@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E0E10">
+<title>Folder Test</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#0E0E10; --fg:#F2F2F2; --muted:#8D9096; --line:#26272B; --blue:#0086FF; --blue2:#4DA8FF; --warn:#E0A33A; --bad:#E5534B; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:400 14px/1.55 'IBM Plex Mono', ui-monospace, monospace;
+         padding: calc(env(safe-area-inset-top) + 20px) 18px calc(env(safe-area-inset-bottom) + 40px); }
+  h1 { font-weight:500; font-size:20px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 22px; }
+  .verdict { border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:22px; }
+  .verdict .big { font-size:17px; font-weight:500; margin-bottom:4px; }
+  .ok { color:var(--blue2); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  .step { border-top:1px solid var(--line); padding:18px 0; }
+  .step h2 { font-size:15px; font-weight:500; margin:0 0 6px; }
+  .step h2 span { color:var(--blue2); margin-right:8px; }
+  .step p { color:var(--muted); margin:0 0 12px; font-size:13px; }
+  button { font:inherit; font-weight:500; background:var(--blue); color:#fff; border:0; border-radius:10px;
+           padding:12px 16px; width:100%; margin:4px 0; }
+  button.ghost { background:transparent; color:var(--blue2); border:1px solid var(--blue); }
+  button:disabled { opacity:.4; }
+  .out { margin-top:10px; font-size:13px; white-space:pre-wrap; word-break:break-word; }
+  .out div { padding:2px 0; }
+  img.preview { max-width:100%; max-height:260px; border-radius:8px; margin-top:10px; display:block; }
+  .hist { font-size:12px; color:var(--muted); white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Folder Test</h1>
+<p class="sub">Checks whether Agora could use a folder on this phone. It only writes inside a folder named “Agora test”, and never changes or deletes your own files.</p>
+
+<div class="verdict" id="verdict"><div class="big">Checking…</div></div>
+
+<div class="step">
+  <h2><span>1</span>Pick your My Files folder</h2>
+  <p>Create a folder called “My Files” in your phone’s Files app first and put a few files in it. Then tap below, open that folder and tap “Use this folder”, then “Allow”.</p>
+  <button id="pick">Choose folder</button>
+  <div class="out" id="out1"></div>
+</div>
+
+<div class="step">
+  <h2><span>2</span>Speed test (read only)</h2>
+  <p>Pick a big folder, such as Pictures › Screenshots. The test counts every file and opens one picture. Nothing is changed.</p>
+  <button id="speed">Choose a big folder</button>
+  <button id="stop" class="ghost" style="display:none">Stop</button>
+  <div class="out" id="out2"></div>
+</div>
+
+<div class="step">
+  <h2><span>3</span>Close and reopen</h2>
+  <p>Swipe this app away from your recent apps so it closes completely, then open it again from its icon. The box at the top will say whether it still has the folder. Try once more tomorrow too.</p>
+</div>
+
+<div class="step">
+  <h2><span>4</span>Send the results</h2>
+  <p>Copies everything this test found, so you can paste it into the chat with Claude.</p>
+  <button id="copy">Copy results</button>
+  <button id="clean" class="ghost">Remove the “Agora test” folder</button>
+  <div class="out" id="out4"></div>
+  <p style="margin-top:16px">Every time this app opened:</p>
+  <div class="hist" id="hist"></div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const mode = matchMedia('(display-mode: standalone)').matches ? 'installed app' : 'browser tab';
+  const chrome = (navigator.userAgent.match(/Chrome\/([\d.]+)/) || [])[1] || '?';
+  const android = (navigator.userAgent.match(/Android ([\d.]+)/) || [])[1] || '?';
+
+  // Small key-value store in IndexedDB: folder handles can only be saved there.
+  const db = new Promise((res, rej) => {
+    const r = indexedDB.open('folder-test', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('kv');
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+  const get = async k => { const d = await db; return new Promise((res, rej) => { const r = d.transaction('kv').objectStore('kv').get(k); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); };
+  const set = async (k, v) => { const d = await db; return new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); }); };
+
+  const line = (box, text, cls) => { const d = document.createElement('div'); d.textContent = text; if (cls) d.className = cls; $(box).appendChild(d); return d; };
+  const when = t => new Date(t).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+  const errText = e => (e && (e.name + ': ' + e.message)) || String(e);
+
+  let results = {};             // step results, saved so they survive a restart
+  const save = async (k, v) => { results[k] = v; await set('results', results); };
+
+  function verdict(cls, big, small, button) {
+    const v = $('verdict'); v.innerHTML = '';
+    const b = document.createElement('div'); b.className = 'big ' + cls; b.textContent = big; v.appendChild(b);
+    if (small) { const s = document.createElement('div'); s.style.color = 'var(--muted)'; s.style.fontSize = '13px'; s.textContent = small; v.appendChild(s); }
+    if (button) { const btn = document.createElement('button'); btn.textContent = button.label; btn.onclick = button.run; btn.style.marginTop = '12px'; v.appendChild(btn); }
+  }
+
+  // Write a small file inside "Agora test", read it back, and count the folder's top level.
+  async function tryFolder(dir, box) {
+    $(box).innerHTML = '';
+    try {
+      const sub = await dir.getDirectoryHandle('Agora test', { create: true });
+      const fh = await sub.getFileHandle('test.txt', { create: true });
+      const w = await fh.createWritable();
+      const stamp = 'Written by Folder Test on ' + new Date().toString();
+      await w.write(stamp); await w.close();
+      const back = await (await fh.getFile()).text();
+      if (back !== stamp) throw new Error('read back something different');
+      line(box, '✓ Created a file and read it back', 'ok');
+      await save('write', 'ok');
+    } catch (e) { line(box, '✗ Could not write: ' + errText(e), 'bad'); await save('write', 'failed — ' + errText(e)); }
+    try {
+      let n = 0; const names = [];
+      for await (const [name] of dir.entries()) { n++; if (names.length < 6 && name !== 'Agora test') names.push(name); }
+      line(box, '✓ Sees ' + n + ' items in the folder' + (names.length ? ' (' + names.join(', ') + (n > names.length + 1 ? ', …' : '') + ')' : ''), 'ok');
+      await save('list', n + ' items');
+    } catch (e) { line(box, '✗ Could not list the folder: ' + errText(e), 'bad'); await save('list', 'failed — ' + errText(e)); }
+  }
+
+  async function checkSaved(launchLog) {
+    if (!('showDirectoryPicker' in window)) {
+      verdict('bad', 'This browser can’t open folders', 'Open this page in Chrome. Chrome ' + chrome + ' here.');
+      $('pick').disabled = $('speed').disabled = true; return 'not supported';
+    }
+    const dir = await get('dir');
+    if (!dir) { verdict('', 'No folder chosen yet', 'Start with step 1.'); return 'no folder yet'; }
+    const p = await dir.queryPermission({ mode: 'readwrite' });
+    if (p === 'granted') {
+      const before = launchLog.length > 1;
+      verdict('ok', before ? 'Still has your folder — no tap needed' : 'Folder connected',
+        '“' + dir.name + '” is ready. ' + (before ? 'Access survived closing the app.' : 'Now do step 3.'));
+      await tryFolder(dir, 'out1');
+    } else {
+      verdict('warn', 'Remembers the folder, but needs a tap', '“' + dir.name + '”: Android asks again after a restart (' + p + ').',
+        { label: 'Allow again', run: async () => {
+            const r = await dir.requestPermission({ mode: 'readwrite' });
+            await save('reallow', r);
+            if (r === 'granted') { verdict('ok', 'Allowed again with one tap', '“' + dir.name + '” is ready.'); await tryFolder(dir, 'out1'); }
+            else verdict('bad', 'Permission refused (' + r + ')');
+          } });
+    }
+    return p;
+  }
+
+  $('pick').onclick = async () => {
+    try {
+      const dir = await showDirectoryPicker({ id: 'myfiles', mode: 'readwrite' });
+      await set('dir', dir);
+      await save('picked', dir.name);
+      verdict('ok', 'Folder connected', '“' + dir.name + '” is ready. Now do steps 2 and 3.');
+      await tryFolder(dir, 'out1');
+    } catch (e) {
+      $('out1').innerHTML = '';
+      if (e.name === 'AbortError') line('out1', 'Cancelled or not allowed. Android won’t share some folders (like Download or the top of storage); pick a folder inside them.', 'warn');
+      else line('out1', '✗ ' + errText(e), 'bad');
+      await save('picked', 'failed — ' + errText(e));
+    }
+  };
+
+  // Count every file under a folder, yielding to the screen so the page stays responsive.
+  let stopped = false;
+  $('stop').onclick = () => { stopped = true; };
+  $('speed').onclick = async () => {
+    let dir;
+    try { dir = await showDirectoryPicker({ id: 'speed', mode: 'read' }); }
+    catch (e) { $('out2').textContent = e.name === 'AbortError' ? 'Cancelled.' : errText(e); return; }
+    $('out2').innerHTML = ''; stopped = false; $('stop').style.display = ''; $('speed').disabled = true;
+    const live = line('out2', 'Counting…');
+    const t0 = performance.now(); let files = 0, folders = 0, firstImg = null, last = 0;
+    const walk = async d => {
+      for await (const [name, h] of d.entries()) {
+        if (stopped) return;
+        if (h.kind === 'directory') { folders++; await walk(h); }
+        else { files++; if (!firstImg && /\.(jpe?g|png|webp|gif)$/i.test(name)) firstImg = h; }
+        const now = performance.now();
+        if (now - last > 200) { last = now; live.textContent = 'Counting… ' + files + ' files, ' + ((now - t0) / 1000).toFixed(1) + ' s'; await new Promise(r => setTimeout(r)); }
+      }
+    };
+    try {
+      await walk(dir);
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      live.textContent = (stopped ? 'Stopped: ' : '✓ ') + files + ' files in ' + (folders + 1) + ' folder(s), ' + secs + ' s';
+      live.className = stopped ? 'warn' : 'ok';
+      await save('speed', '“' + dir.name + '”: ' + files + ' files, ' + secs + ' s' + (stopped ? ' (stopped)' : ''));
+      if (firstImg) {
+        const t1 = performance.now(); const f = await firstImg.getFile();
+        const img = new Image(); img.className = 'preview';
+        await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = URL.createObjectURL(f); });
+        const ms = Math.round(performance.now() - t1);
+        line('out2', '✓ Opened “' + firstImg.name + '” (' + (f.size / 1048576).toFixed(1) + ' MB) in ' + ms + ' ms', 'ok');
+        $('out2').appendChild(img);
+        await save('image', (f.size / 1048576).toFixed(1) + ' MB in ' + ms + ' ms');
+      }
+    } catch (e) { line('out2', '✗ ' + errText(e), 'bad'); await save('speed', 'failed — ' + errText(e)); }
+    $('stop').style.display = 'none'; $('speed').disabled = false;
+  };
+
+  $('clean').onclick = async () => {
+    $('out4').innerHTML = '';
+    try {
+      const dir = await get('dir'); if (!dir) return line('out4', 'No folder chosen.');
+      if (await dir.queryPermission({ mode: 'readwrite' }) !== 'granted') return line('out4', 'Tap “Allow again” at the top first.', 'warn');
+      await dir.removeEntry('Agora test', { recursive: true });
+      line('out4', '✓ Removed the “Agora test” folder', 'ok');
+    } catch (e) { line('out4', '✗ ' + errText(e) + ' — you can delete it in the Files app instead.', 'bad'); }
+  };
+
+  let launches = [];
+  $('copy').onclick = async () => {
+    const text = ['Folder Test results', 'Android ' + android + ' · Chrome ' + chrome,
+      ...Object.entries(results).map(([k, v]) => k + ': ' + v),
+      'Opens:', ...launches.map(l => '  ' + when(l.t) + ' · ' + l.mode + ' · ' + l.perm)].join('\n');
+    try { await navigator.clipboard.writeText(text); $('out4').textContent = '✓ Copied. Paste it into the chat.'; }
+    catch { $('out4').textContent = text; }
+  };
+
+  (async () => {
+    results = (await get('results')) || {};
+    launches = (await get('launches')) || [];
+    launches.push({ t: Date.now(), mode, perm: '…' });
+    const perm = await checkSaved(launches).catch(e => 'error — ' + errText(e));
+    launches[launches.length - 1].perm = perm;
+    await set('launches', launches.slice(-40));
+    $('hist').textContent = launches.map(l => when(l.t) + ' · ' + l.mode + ' · ' + l.perm).reverse().join('\n');
+  })();
+
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+})();
+</script>
+</body>
+</html>
